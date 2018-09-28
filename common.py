@@ -32,6 +32,7 @@ submodules_dir = os.path.join(root_dir, 'submodules')
 buildroot_src_dir = os.path.join(submodules_dir, 'buildroot')
 crosstool_ng_src_dir = os.path.join(submodules_dir, 'crosstool-ng')
 linux_src_dir = os.path.join(submodules_dir, 'linux')
+linux_config_dir = os.path.join(this.root_dir, 'kernel_config')
 extract_vmlinux = os.path.join(linux_src_dir, 'scripts', 'extract-vmlinux')
 qemu_src_dir = os.path.join(submodules_dir, 'qemu')
 parsec_benchmark_src_dir = os.path.join(submodules_dir, 'parsec-benchmark')
@@ -102,12 +103,23 @@ def get_argparse(default_args=None, argparse_args=None):
         help='Use Baremetal examples instead of Linux kernel ones'
     )
     parser.add_argument(
+        '--buildroot-build-id',
+        default=default_build_id,
+        help='Buildroot build ID. Allows you to keep multiple separate gem5 builds. Default: %(default)s'
+    )
+    parser.add_argument(
         '--crosstool-ng-build-id', default=default_build_id,
         help='Crosstool-NG build ID. Allows you to keep multiple separate crosstool-NG builds. Default: %(default)s'
     )
     parser.add_argument(
         '-g', '--gem5', default=False, action='store_true',
         help='Use gem5 instead of QEMU'
+    )
+    parser.add_argument(
+        '--gem5-src',
+        help='''\
+Use the given directory as the gem5 source tree. Ignore `--gem5-worktree`.
+'''
     )
     parser.add_argument(
         '-L', '--linux-build-id', default=default_build_id,
@@ -131,12 +143,6 @@ See the documentation for other values known to work.
 gem5 git worktree to use for build and Python scripts at runtime. Automatically
 create a new git worktree with the given id if one does not exist. If not
 given, just use the submodule source.
-'''
-    )
-    parser.add_argument(
-        '--gem5-src',
-        help='''\
-Use the given directory as the gem5 source tree. Ignore `--gem5-worktree`.
 '''
     )
     parser.add_argument(
@@ -168,13 +174,11 @@ Default: the run ID (-n) if that is an integer, otherwise 0.
         help='QEMU build ID. Allows you to keep multiple separate QEMU builds. Default: %(default)s'
     )
     parser.add_argument(
-        '--buildroot-build-id',
-        default=default_build_id,
-        help='Buildroot build ID. Allows you to keep multiple separate gem5 builds. Default: %(default)s'
-    )
-    parser.add_argument(
         '-t', '--gem5-build-type', default='opt',
         help='gem5 build type, most often used for "debug" builds. Default: %(default)s'
+    )
+    parser.add_argument(
+        '-v', '--verbose', default=False, action='store_true',
     )
     if hasattr(this, 'configs'):
         defaults = this.configs.copy()
@@ -218,12 +222,37 @@ def get_stats(stat_re=None, stats_file=None):
                     ret.append(cols[1])
     return ret
 
-def get_toolchain_tool(tool):
+def get_toolchain_prefix(tool):
     global this
-    if this.baremetal is None:
-        return glob.glob(os.path.join(this.host_bin_dir, '*-buildroot-*-{}'.format(tool)))[0]
+    buildroot_full_prefix = os.path.join(this.host_bin_dir, this.buildroot_toolchain_prefix)
+    buildroot_exists = os.path.exists('{}-{}'.format(buildroot_full_prefix, tool))
+    crosstool_ng_full_prefix = os.path.join(this.crosstool_ng_bin_dir, this.crosstool_ng_toolchain_prefix)
+    crosstool_exists = os.path.exists('{}-{}'.format(crosstool_ng_full_prefix, tool))
+    ubuntu_tool = '{}-{}'.format(this.ubuntu_toolchain_prefix, tool)
+    ubuntu_path = shutil.which(ubuntu_tool)
+    tried = []
+    if ubuntu_path is not None:
+        ubuntu_exists = True
+        ubuntu_full_prefix = ubuntu_path[:-(len(tool)+1)]
     else:
-        return os.path.join(this.crosstool_ng_bin_dir, '{}-{}'.format(this.crosstool_ng_prefix, tool))
+        ubuntu_exists = False
+    if this.baremetal is None:
+        print(buildroot_full_prefix)
+        if buildroot_exists:
+            return buildroot_full_prefix
+        elif crosstool_exists:
+            return crosstool_ng_full_prefix
+        elif ubuntu_exists:
+            return ubuntu_full_prefix
+        tried.extend([buildroot_full_prefix, crosstool_ng_full_prefix, ubuntu_tool])
+    else:
+        if crosstool_exists:
+            return crosstool_ng_full_prefix
+        tried.extend([crosstool_ng_full_prefix])
+    raise Exception('Tool not found. Tried:\n' + '\n'.join(tried))
+
+def get_toolchain_tool(tool):
+    return '{}-{}'.format(this.get_toolchain_prefix(tool), tool)
 
 def github_make_request(
         authenticate=False,
@@ -267,7 +296,7 @@ def mkdir():
     os.makedirs(this.qemu_run_dir, exist_ok=True)
     os.makedirs(this.p9_dir, exist_ok=True)
 
-def print_cmd(cmd, cwd, cmd_file=None, extra_env=None, extra_paths=None):
+def print_cmd(cmd, cwd=None, cmd_file=None, extra_env=None, extra_paths=None):
     '''
     Format a command given as a list of strings so that it can
     be viewed nicely and executed by bash directly and print it to stdout.
@@ -277,7 +306,8 @@ def print_cmd(cmd, cwd, cmd_file=None, extra_env=None, extra_paths=None):
     '''
     newline_separator = ' \\\n'
     out = []
-    out.append('cd {} &&{}'.format(shlex.quote(cwd), newline_separator))
+    if cwd is not None:
+        out.append('cd {} &&{}'.format(shlex.quote(cwd), newline_separator))
     if extra_paths is not None:
         out.append('PATH="{}:${{PATH}}"'.format(':'.join(extra_paths)) + newline_separator)
     for key in extra_env:
@@ -389,7 +419,7 @@ def run_cmd(
     if 'cwd' in kwargs:
         cwd = kwargs['cwd']
     else:
-        cwd = os.getcwd()
+        cwd = None
     env = os.environ.copy()
     env.update(extra_env)
     if extra_paths is not None:
@@ -452,7 +482,9 @@ def setup(parser):
         this.armv = 7
         this.gem5_arch = 'ARM'
         this.mcpu = 'cortex-a15'
-        this.crosstool_ng_prefix = 'arm-unknown-eabi'
+        this.buildroot_toolchain_prefix = 'arm-buildroot-linux-uclibcgnueabihf'
+        this.crosstool_ng_toolchain_prefix = 'arm-unknown-eabi'
+        this.ubuntu_toolchain_prefix = 'arm-linux-gnueabihf'
         if args.gem5:
             if this.machine is None:
                 this.machine = 'VExpress_GEM5_V1'
@@ -463,7 +495,9 @@ def setup(parser):
         this.armv = 8
         this.gem5_arch = 'ARM'
         this.mcpu = 'cortex-a57'
-        this.crosstool_ng_prefix = 'aarch64-unknown-elf'
+        this.buildroot_toolchain_prefix = 'aarch64-buildroot-linux-uclibc'
+        this.crosstool_ng_toolchain_prefix = 'aarch64-unknown-elf'
+        this.ubuntu_toolchain_prefix = 'aarch64-linux-gnu'
         if args.gem5:
             if this.machine is None:
                 this.machine = 'VExpress_GEM5_V1'
@@ -471,8 +505,10 @@ def setup(parser):
             if this.machine is None:
                 this.machine = 'virt'
     elif args.arch == 'x86_64':
-        this.crosstool_ng_prefix = 'TODO'
+        this.crosstool_ng_toolchain_prefix = 'x86_64-unknown-elf'
         this.gem5_arch = 'X86'
+        this.buildroot_toolchain_prefix = 'x86_64-buildroot-linux-uclibc'
+        this.ubuntu_toolchain_prefix = 'x86_64-linux-gnu'
         if args.gem5:
             if this.machine is None:
                 this.machine = 'TODO'
@@ -484,9 +520,6 @@ def setup(parser):
     this.buildroot_download_dir = os.path.join(this.buildroot_out_dir, 'download')
     this.buildroot_config_file = os.path.join(this.buildroot_build_dir, '.config')
     this.build_dir = os.path.join(this.buildroot_build_dir, 'build')
-    this.linux_build_dir = os.path.join(this.build_dir, 'linux-custom')
-    this.linux_variant_dir = '{}.{}'.format(this.linux_build_dir, args.linux_build_id)
-    this.vmlinux = os.path.join(this.linux_variant_dir, "vmlinux")
     this.qemu_build_dir = os.path.join(this.out_dir, 'qemu', args.qemu_build_id)
     this.qemu_executable_basename = 'qemu-system-{}'.format(args.arch)
     this.qemu_executable = os.path.join(this.qemu_build_dir, '{}-softmmu'.format(args.arch), this.qemu_executable_basename)
@@ -551,15 +584,23 @@ def setup(parser):
     this.gem5_se_file = os.path.join(this.gem5_config_dir, 'example', 'se.py')
     this.gem5_fs_file = os.path.join(this.gem5_config_dir, 'example', 'fs.py')
     this.run_cmd_file = os.path.join(this.run_dir, 'run.sh')
-    if args.arch == 'arm':
-        this.linux_image = os.path.join('arch', 'arm', 'boot', 'zImage')
-    elif args.arch == 'aarch64':
-        this.linux_image = os.path.join('arch', 'arm64', 'boot', 'Image')
-    elif args.arch == 'x86_64':
-        this.linux_image = os.path.join('arch', 'x86', 'boot', 'bzImage')
-    this.linux_image = os.path.join(this.linux_variant_dir, linux_image)
 
-    # Ports.
+    # Linux
+    this.linux_buildroot_build_dir = os.path.join(this.build_dir, 'linux-custom')
+    this.linux_build_dir = os.path.join(this.out_dir, 'linux', args.linux_build_id, args.arch)
+    this.vmlinux = os.path.join(this.linux_build_dir, "vmlinux")
+    if args.arch == 'arm':
+        this.linux_arch = 'arm'
+        this.linux_image = os.path.join('arch', this.linux_arch, 'boot', 'zImage')
+    elif args.arch == 'aarch64':
+        this.linux_arch = 'arm64'
+        this.linux_image = os.path.join('arch', this.linux_arch, 'boot', 'Image')
+    elif args.arch == 'x86_64':
+        this.linux_arch = 'x86'
+        this.linux_image = os.path.join('arch', this.linux_arch, 'boot', 'bzImage')
+    this.linux_image = os.path.join(this.linux_build_dir, linux_image)
+
+    # Ports
     if args.port_offset is None:
         try:
             args.port_offset = int(args.run_id)

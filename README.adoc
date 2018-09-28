@@ -3362,6 +3362,8 @@ although this can be useful when someone gives you a random image.
 [[kernel-configs-about]]
 ==== About our Linux kernel configs
 
+TODO: explain link:update-buildroot-kernel-config[]
+
 We have managed to come up with minimalistic kernel configs that work for both QEMU and gem5 (oh, the hours of bisection).
 
 Our configs are all based on Buildroot's configs, which were designed for QEMU, and then on top of those we also add:
@@ -10853,23 +10855,21 @@ We use it for:
 +
 C files for example need compilation, and must go through the regular package system, e.g. through link:packages/kernel_modules/user[].
 
-=== CONTRIBUTING
+=== Test this repo
 
-==== Testing
+This section describes how to run the most complete set of tests possible.
 
-Testing that should be done for every functional patch.
+It takes too much time to be feasible for every patch, but it should be done for every release.
 
-===== Guest testing
-
-Run all tests:
+==== Automated tests
 
 ....
 ./build-all
-./test
+./test --size 3
 echo $?
 ....
 
-Should output 0.
+should output 0.
 
 Sources:
 
@@ -10893,7 +10893,7 @@ Test that the Internet works:
 
 Source: link:rootfs_overlay/test_all.sh[].
 
-===== Host testing
+===== Test GDB
 
 Shell 1:
 
@@ -10914,7 +10914,7 @@ Then proceed to do the following tests:
 * `/count.sh` and `b __x64_sys_write`
 * `insmod /timer.ko` and `b lkmc_timer_callback`
 
-==== Bisection
+=== Bisection
 
 When updating the Linux kernel, QEMU and gem5, things sometimes break.
 
@@ -10953,7 +10953,7 @@ git submodule update
 
 An example of Linux kernel commit bisection on gem5 boots can be found at: link:bisect-linux-boot-gem5[].
 
-==== Update a forked submodule
+=== Update a forked submodule
 
 This is a template update procedure for submodules for which we have some patches on on top of mainline.
 
@@ -10979,7 +10979,7 @@ git rebase --onto "$next_mainline_revision" "$last_mainline_revision"
 git commit -m "linux: update to ${next_mainline_revision}"
 ....
 
-==== Sanity checks
+=== Sanity checks
 
 Basic C and C++ hello worlds:
 
@@ -11000,7 +11000,7 @@ Sources:
 * link:packages/kernel_modules/user/hello.c[]
 * link:packages/kernel_modules/user/hello_cpp.c[]
 
-===== rand_check.out
+==== rand_check.out
 
 Print out several parameters that normally change randomly from boot to boot:
 
@@ -11015,7 +11015,7 @@ This can be used to check the determinism of:
 * <<norandmaps>>
 * <<qemu-record-and-replay>>
 
-==== Release
+=== Release
 
 Create a release:
 
@@ -11042,7 +11042,7 @@ This should in particular enable to easily update <<prebuilt>>.
 
 TODO also run tests and only release if they pass.
 
-===== release-zip
+==== release-zip
 
 Create a zip containing all files required for <<prebuilt>>
 
